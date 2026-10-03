@@ -20,11 +20,17 @@ def confirm_handover(conn, handover_id: int) -> dict:
         (h["week_id"], h["from_member_id"]),
     ).fetchall()
 
-    # 拍板：确认即自动作废仍引用交出人旧身份的 pending 对调，
-    # 让对调列表与看板即时一致，不留确认不了的僵尸单。
-    voided = []
+    # 拍板：确认即改派看板格子给接收人；移交明细落同一批格子快照，
+    # 看板格位与交接详情同钉一份清单，不留“详情已换人、看板仍旧人”的裂口。
+    conn.execute(
+        "UPDATE assignments SET member_id = ? WHERE week_id = ? AND member_id = ?",
+        (h["to_member_id"], h["week_id"], h["from_member_id"]),
+    )
 
-    # 详情清单照常写入移交格，看板 assignments 仍保留交出人
+    # 仍引用交出人旧身份（已易主格子）的 pending 对调即时自动作废，
+    # 让对调列表与看板一致，不留确认不了的僵尸单。
+    voided = _void_pending_swaps(conn, h, cells)
+
     conn.executemany(
         "INSERT INTO handover_cells(handover_id, day, task_id) VALUES (?, ?, ?)",
         [(handover_id, c["day"], c["task_id"]) for c in cells],

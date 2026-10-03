@@ -41,13 +41,13 @@ def deactivate_member(conn, member_id: int, week_id: int) -> dict:
         raise HandoverError("member_not_found")
     if not m["active"]:
         raise HandoverError("already_inactive")
-    rows = conn.execute(
-        "SELECT status FROM handovers WHERE week_id = ? AND from_member_id = ?",
+    row = conn.execute(
+        "SELECT status FROM handovers WHERE week_id = ? AND from_member_id = ? AND status = 'confirmed'",
         (week_id, member_id),
-    ).fetchall()
-    if not rows:
-        return {"ok": True, "bypassed": True}
-    if not any(r["status"] == "confirmed" for r in rows):
-        return {"ok": True, "bypassed": True}
+    ).fetchone()
+    # 拍板：无交接条、或仅签发未确认，一律拒绝停用——
+    # 格子尚未改派就停用会让看板挂着离场成员的脏格位。
+    if not row:
+        raise HandoverError("handover_required")
     conn.execute("UPDATE members SET active = 0 WHERE id = ?", (member_id,))
     return {"id": member_id, "active": 0}

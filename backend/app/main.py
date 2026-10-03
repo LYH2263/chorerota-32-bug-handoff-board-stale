@@ -109,6 +109,17 @@ def confirm_swap(swap_id: int):
         c.close(); raise HTTPException(400, "not_pending")
     assigns = [dict(r) for r in c.execute(
         "SELECT id,day,task_id,member_id FROM assignments WHERE week_id=?", (sw["week_id"],))]
+    # 防御闸：任一对调格已被已确认交接条移交（即仍引用交出人旧身份的残留单），
+    # 拒绝改表。正常路径下这类 pending 单在交接确认时已自动作废，
+    # 这里拦截漏网/并发残留，避免对调列表出现成功行却与看板、交接清单矛盾。
+    superseded = c.execute(
+        "SELECT 1 FROM handover_cells hc JOIN handovers h ON h.id = hc.handover_id"
+        " WHERE h.week_id = ? AND h.status = 'confirmed'"
+        " AND ((hc.day = ? AND hc.task_id = ?) OR (hc.day = ? AND hc.task_id = ?)) LIMIT 1",
+        (sw["week_id"], sw["a_day"], sw["a_task"], sw["b_day"], sw["b_task"]),
+    ).fetchone()
+    if superseded:
+        c.close(); raise HTTPException(400, "swap_superseded_by_handover")
     slots = [{"day": a["day"], "task_id": a["task_id"], "member_id": a["member_id"]} for a in assigns]
     try:
         new_slots = apply_swap(slots, sw["a_day"], sw["a_task"], sw["b_day"], sw["b_task"])
