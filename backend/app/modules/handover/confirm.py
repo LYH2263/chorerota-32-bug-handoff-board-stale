@@ -1,4 +1,4 @@
-"""交接确认写库：校验接收人 → 改派格子 → 自动作废悬挂对调 → 记录移交格子。
+"""交接确认写库：校验接收人 → 记录移交格子 → 改派看板格子 → 自动作废悬挂对调。
 
 事务边界在调用方（API 层 commit）；本模块所有校验先于任何写入，
 校验失败抛 HandoverError，不会留下半提交状态。
@@ -19,16 +19,22 @@ def confirm_handover(conn, handover_id: int) -> dict:
         "SELECT day, task_id FROM assignments WHERE week_id = ? AND member_id = ? ORDER BY day, task_id",
         (h["week_id"], h["from_member_id"]),
     ).fetchall()
+    cell_keys = [(c["day"], c["task_id"]) for c in cells]
 
-    # 拍板：确认即自动作废仍引用交出人旧身份的 pending 对调，
-    # 让对调列表与看板即时一致，不留确认不了的僵尸单。
-    voided = []
-
-    # 详情清单照常写入移交格，看板 assignments 仍保留交出人
+    # 1) 确认时落库的格子快照，供交接详情与看板移交清单复用同一投影
     conn.executemany(
         "INSERT INTO handover_cells(handover_id, day, task_id) VALUES (?, ?, ?)",
-        [(handover_id, c["day"], c["task_id"]) for c in cells],
+        [(handover_id, day, task) for day, task in cell_keys],
     )
+    # 2) 看板格子即时易主：assignments 与交接清单必须三路一致
+    conn.executemany(
+        "UPDATE assignments SET member_id = ? WHERE week_id = ? AND day = ? AND task_id = ?",
+        [(h["to_member_id"], h["week_id"], day, task) for day, task in cell_keys],
+    )
+    # 3) 仍引用交出人旧身份（占着被移交格子）的 pending 对调自动作废，
+    #    对调列表与看板即时一致，不留确认不了的僵尸单
+    voided = _void_pending_swaps(conn, h, cells)
+
     conn.execute(
         "UPDATE handovers SET status = 'confirmed', cell_count = ?, confirmed_at = datetime('now') WHERE id = ?",
         (len(cells), handover_id),
@@ -50,7 +56,7 @@ def _check_receiver(conn, h) -> None:
 
 
 def _void_pending_swaps(conn, h, cells) -> list[int]:
-    """pending 对调按格子（day, task）定位；格子易主即引用失效，作废之。"""
+    """pending 对调按格子（day, task）定位；格子易主即引用交出人旧身份，作废之。"""
     cell_keys = {(c["day"], c["task_id"]) for c in cells}
     if not cell_keys:
         return []

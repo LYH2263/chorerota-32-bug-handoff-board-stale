@@ -15,6 +15,7 @@ def issue_handover(conn, week_id: int, from_member_id: int, to_member_id: int, n
         raise HandoverError("sender_inactive")
     if to_member_id == from_member_id:
         raise HandoverError("receiver_is_sender")
+    # 接收人在岗/clean 的权威校验在确认时（签发后接收人状态可能变化）
     receiver = conn.execute("SELECT id FROM members WHERE id = ?", (to_member_id,)).fetchone()
     if not receiver:
         raise HandoverError("receiver_not_found")
@@ -45,9 +46,10 @@ def deactivate_member(conn, member_id: int, week_id: int) -> dict:
         "SELECT status FROM handovers WHERE week_id = ? AND from_member_id = ?",
         (week_id, member_id),
     ).fetchall()
+    # 无交接条直接停用必须拒绝；仅签发未确认也不算数——格子尚未改派，停用会留脏数据
     if not rows:
-        return {"ok": True, "bypassed": True}
+        raise HandoverError("handover_required")
     if not any(r["status"] == "confirmed" for r in rows):
-        return {"ok": True, "bypassed": True}
+        raise HandoverError("handover_not_confirmed")
     conn.execute("UPDATE members SET active = 0 WHERE id = ?", (member_id,))
     return {"id": member_id, "active": 0}

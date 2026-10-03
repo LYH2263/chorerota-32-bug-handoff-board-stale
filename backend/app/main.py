@@ -91,8 +91,10 @@ def request_swap(week_id: int, body: SwapBody):
     if not check["ok"]:
         c.close(); raise HTTPException(400, check["reason"])
     cur = c.execute(
-        "INSERT INTO swap_requests(week_id,a_day,a_task,b_day,b_task,status,note) VALUES (?,?,?,?,?,?,?)",
-        (week_id, body.a_day, body.a_task, body.b_day, body.b_task, "pending", body.note))
+        "INSERT INTO swap_requests(week_id,a_day,a_task,b_day,b_task,a_member,b_member,status,note)"
+        " VALUES (?,?,?,?,?,?,?,?,?)",
+        (week_id, body.a_day, body.a_task, body.b_day, body.b_task,
+         check["a_member"], check["b_member"], "pending", body.note))
     c.commit(); sid = cur.lastrowid; c.close()
     return {"id": sid, "status": "pending", **check}
 
@@ -110,6 +112,20 @@ def confirm_swap(swap_id: int):
     assigns = [dict(r) for r in c.execute(
         "SELECT id,day,task_id,member_id FROM assignments WHERE week_id=?", (sw["week_id"],))]
     slots = [{"day": a["day"], "task_id": a["task_id"], "member_id": a["member_id"]} for a in assigns]
+
+    def _owner(day, task):
+        for s in slots:
+            if s["day"] == day and s["task_id"] == task:
+                return s["member_id"]
+        return None
+
+    # 交接确认会让格子易主；申请时钉住的双方成员若已与看板不符，
+    # 该 pending 对调引用的是交出人旧身份，必须拒绝改表（正常已被交接自动作废，
+    # 这里是兜底，防止漏网的僵尸单）。
+    if sw["a_member"] is not None and sw["b_member"] is not None:
+        if _owner(sw["a_day"], sw["a_task"]) != sw["a_member"] \
+                or _owner(sw["b_day"], sw["b_task"]) != sw["b_member"]:
+            c.close(); raise HTTPException(400, "stale_swap")
     try:
         new_slots = apply_swap(slots, sw["a_day"], sw["a_task"], sw["b_day"], sw["b_task"])
     except ValueError as e:
